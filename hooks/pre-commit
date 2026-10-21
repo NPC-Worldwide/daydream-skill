@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Pre-commit guard for daydream-skill.
+#
+# Recompiles daydream.jinx -> skills/daydream, then proves the compiled folder
+# actually loads: frontmatter contract, no leftover jinja, every module
+# compiles, the folder imports and walks a chain offline in a fresh process,
+# and the TinyTim default is still localhost-only. A failure refuses the commit.
+#
+# Works whether this folder is its own repo or nested inside a monorepo, and
+# no-ops when the staged change touches nothing here.
+set -euo pipefail
+
+# Resolve through symlinks: installed as .git/hooks/pre-commit, BASH_SOURCE[0]
+# would otherwise point into .git.
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+HOOK_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+
+# Installed as a *copy* under .git/hooks, HOOK_DIR is .../.git/hooks, so the
+# repo root is two levels up, not one. Handle both install styles.
+if [ "$(basename "$HOOK_DIR")" = "hooks" ] && [ "$(basename "$(dirname "$HOOK_DIR")")" = ".git" ]; then
+  ROOT="$(cd "$(dirname "$HOOK_DIR")/.." && pwd)"
+else
+  ROOT="$(cd "$HOOK_DIR/.." && pwd)"
+fi
+
+# Last resort for worktrees / odd installs: ask git, then confirm the skill is
+# actually there before trusting it.
+if [ ! -f "$ROOT/daydream.jinx" ]; then
+  CANDIDATE="$(git -C "$HOOK_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$CANDIDATE" ] && [ -f "$CANDIDATE/daydream.jinx" ]; then
+    ROOT="$(cd "$CANDIDATE" && pwd)"
+  fi
+fi
+
+if [ ! -f "$ROOT/daydream.jinx" ]; then
+  printf '[daydream-skill] cannot locate daydream.jinx from %s\n' "$HOOK_DIR" >&2
+  exit 1
+fi
+
+say() { printf '\033[35m[daydream-skill]\033[0m %s\n' "$1"; }
+
+REPO="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+
+if [ -n "$REPO" ]; then
+  STAGED="$(git -C "$REPO" diff --cached --name-only --diff-filter=ACMR || true)"
+  if [ -z "${STAGED//[$'\n\t ']/}" ]; then
+    exit 0                      # nothing staged at all
+  fi
+
+  if [ "$(readlink -f "$REPO")" = "$(readlink -f "$ROOT")" ]; then
+    PREFIX=""                   # this folder *is* the repo root
+  else
+    PREFIX="$(realpath --relative-to="$REPO" "$ROOT")/"
+  fi
+
+  relevant=0
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    case "$path" in
+      "$PREFIX"daydream.jinx|"$PREFIX"scripts/*|"$PREFIX"skills/*) relevant=1 ;;
+    esac
+  done <<< "$STAGED"
+
+  if [ "$relevant" -eq 0 ]; then
+    exit 0                      # change is unrelated to this skill
+  fi
+fi
+
+say "compiling daydream.jinx -> skills/daydream"
+python3 "$ROOT/scripts/compile_skill.py" --if-available
+
+say "verifying the compiled skill"
+if ! python3 "$ROOT/scripts/verify_skill.py"; then
+  say "FAILED - the compiled skill does not load; commit refused"
+  exit 1
+fi
+
+# Keep the artifact in the same commit as the source it came from.
+if [ -n "$REPO" ] && [ -d "$ROOT/skills" ]; then
+  git -C "$REPO" add -A -- "$ROOT/skills" >/dev/null 2>&1 || true
+fi
+
+say "ok"

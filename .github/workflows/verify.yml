@@ -1,0 +1,25 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  skill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify the committed skill artifact loads
+        run: python3 scripts/verify_skill.py
+
+      - name: Recompile and confirm the artifact matches the jinx
+        run: |
+          pip install --quiet npcpy
+          python3 scripts/compile_skill.py
+          git diff --exit-code -- skills/

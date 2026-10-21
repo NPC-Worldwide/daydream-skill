@@ -1,0 +1,58 @@
+jinx_name: daydream
+description: >-
+  Daydream on a problem in one of three modes. `wander` alternates low- and
+  high-temperature streams with random word cutoffs, word sampling and injected
+  events (the original wander algorithm, headless). `markov` fits an order-k
+  Markov chain over the wandering text and walks it, producing a dream that
+  needs no further model calls. `tinytim` dreams with the TinyTim 1B model
+  running locally through Ollama (or the HF checkpoint), so nothing leaves the
+  machine. Use when the user wants divergent, associative thinking rather than
+  analysis, a summary, or a plan.
+inputs:
+  - mode: wander
+  - problem: null
+  - environment: null
+  - low_temp: 0.5
+  - high_temp: 1.9
+  - n_min: 30
+  - n_max: 150
+  - interruption_likelihood: 0.1
+  - sample_rate: 0.5
+  - n_streams: 6
+  - include_events: true
+  - num_events: 3
+  - synthesis: true
+  - markov_order: 2
+  - markov_walks: 3
+  - markov_walk_words: 90
+  - markov_temperature: 0.9
+  - markov_rounds: 1
+  - n_seed_streams: 4
+  - tinytim_backend: null
+  - tinytim_host: null
+  - tinytim_model: null
+  - tinytim_repo: null
+  - tinytim_max_tokens: 160
+  - seed: null
+  - model: null
+  - provider: null
+
+steps:
+  - name: run_daydream
+    engine: python
+    code: |
+      import os
+      import sys
+
+      _root = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
+      for _candidate in (_root, os.path.join(_root, 'scripts'), os.path.join(_root, '..', 'scripts')):
+          if os.path.isdir(_candidate) and _candidate not in sys.path:
+              sys.path.insert(0, _candidate)
+
+      from daydream import run as _run_daydream
+
+      _context = globals().get('context')
+      if _context is None:
+          print('This step expects an npcsh jinx context. Standalone CLI: python scripts/daydream.py --help')
+      else:
+          _context['output'] = _run_daydream(_context)

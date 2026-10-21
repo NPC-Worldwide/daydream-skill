@@ -1,0 +1,10 @@
+# Compiling the jinx into a skill folder (jinx_to_skill) and host-model
+# generation inside npcsh both go through npcpy.
+npcpy
+
+# TinyTim's local transport. Used directly so `num_predict` limits generation
+# to tinytim_max_tokens instead of letting a 1B model ramble unbounded.
+ollama
+
+# Needed only for the `hf` TinyTim backend (runs on this machine, no server):
+# transformers torch

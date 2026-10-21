@@ -1,0 +1,23 @@
+# Compile + verify the daydream skill on every commit that touches it.
+#
+#   bash hooks/install_hook.sh  # raw hook: works with no dependencies
+#   pre-commit install          # if you use the pre-commit framework
+#
+# `files:` is matched against paths relative to the git root, so the
+# `(?:daydream-skill/)?` prefix lets this config work both when this folder is
+# its own repo and when it is nested inside a monorepo.
+repos:
+  - repo: local
+    hooks:
+      - id: daydream-skill-compile
+        name: compile daydream.jinx into skills/daydream
+        entry: python3 scripts/compile_skill.py --if-available
+        language: system
+        files: '^(?:daydream-skill/)?(?:daydream\.jinx|scripts/.*\.py|skills/.*)$'
+        pass_filenames: false
+      - id: daydream-skill-verify
+        name: verify the compiled skill loads
+        entry: python3 scripts/verify_skill.py
+        language: system
+        files: '^(?:daydream-skill/)?(?:daydream\.jinx|scripts/.*\.py|skills/.*)$'
+        pass_filenames: false
