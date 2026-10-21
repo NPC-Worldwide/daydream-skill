@@ -2,12 +2,13 @@ jinx_name: daydream
 description: >-
   Daydream on a problem in one of three modes. `wander` alternates low- and
   high-temperature streams with random word cutoffs, word sampling and injected
-  events (the original wander algorithm, headless). `markov` fits an order-k
-  Markov chain over the wandering text and walks it, producing a dream that
-  needs no further model calls. `tinytim` dreams with the TinyTim 1B model
-  running locally through Ollama (or the HF checkpoint), so nothing leaves the
-  machine. Use when the user wants divergent, associative thinking rather than
-  analysis, a summary, or a plan.
+  events (the original wander algorithm, headless). `markovian_drift` generates
+  each stream in chunks whose sampling temperature is resampled by an
+  AR(1)/Ornstein-Uhlenbeck process, so the temperature drifts rather than
+  switching: a Markov chain on the sampler, not on the text. `tinytim` dreams
+  with the TinyTim 1B model running locally through Ollama (or the HF
+  checkpoint), so nothing leaves the machine. Use when the user wants
+  divergent, associative thinking rather than analysis, a summary, or a plan.
 inputs:
   - mode: wander
   - problem: null
@@ -22,12 +23,11 @@ inputs:
   - include_events: true
   - num_events: 3
   - synthesis: true
-  - markov_order: 2
-  - markov_walks: 3
-  - markov_walk_words: 90
-  - markov_temperature: 0.9
-  - markov_rounds: 1
-  - n_seed_streams: 4
+  - drift_mu: 1.0
+  - drift_sigma: 0.3
+  - drift_rho: 0.8
+  - drift_chunk_tokens: 20
+  - drift_max_tokens: 60
   - tinytim_backend: null
   - tinytim_host: null
   - tinytim_model: null

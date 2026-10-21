@@ -11,7 +11,7 @@ repos:
     hooks:
       - id: daydream-skill-compile
         name: compile daydream.jinx into skills/daydream
-        entry: python3 scripts/compile_skill.py --if-available
+        entry: python3 scripts/compile_skill.py --if-available --skip-if-unchanged
         language: system
         files: '^(?:daydream-skill/)?(?:daydream\.jinx|scripts/.*\.py|skills/.*)$'
         pass_filenames: false

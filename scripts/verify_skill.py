@@ -22,8 +22,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 JINX = os.path.join(ROOT, "daydream.jinx")
 SKILLS_DIR = os.path.join(ROOT, "skills")
-SUPPORT_FILES = ("daydream.py", "markov.py", "tinytim.py")
-MODES = ("wander", "markov", "tinytim")
+SUPPORT_FILES = ("daydream.py", "drift.py", "tinytim.py")
+MODES = ("wander", "markovian_drift", "tinytim")
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MAX_NAME_LEN = 64
 MAX_DESC_LEN = 1024
@@ -183,23 +183,66 @@ def verify_skill(skill_dir):
     record(bool(steps), f"{name}: ships at least one step script", ", ".join(steps))
 
     load_code = "\n".join([
-        "import json, sys",
+        "import json, random, sys",
         f"sys.path.insert(0, {skill_dir!r})",
-        "import markov, tinytim, daydream",
+        "import drift, tinytim, daydream",
         "assert callable(daydream.run), 'daydream.run missing'",
-        "chain = markov.fit(['the dream keeps walking through the house'], order=2)",
-        "text, steps, restarts = markov.walk(chain, order=2, n_words=12, seed_text='the dream')",
-        "assert isinstance(text, str)",
+        "assert 'markovian_drift' in daydream.MODES, daydream.MODES",
+        "assert daydream.MODE_ALIASES.get('markov') == 'markovian_drift'",
+        "assert daydream.MODE_ALIASES.get('temperature_switch') == 'wander'",
+        "assert daydream.MODE_ALIASES.get('tinytim_explore') == 'tinytim'",
+        # Stationary law of the AR(1) temperature process.
+        "temps = drift.trajectory(random.Random(1234), mu=1.0, sigma=0.3, rho=0.8, n=20000)",
+        "s = drift.stats(temps)",
+        "assert abs(s['mean'] - 1.0) < 0.05, ('mean', s['mean'])",
+        "assert abs(s['sd'] - 0.3) < 0.05, ('sd', s['sd'])",
+        "assert abs(s['lag1'] - 0.8) < 0.05, ('lag1', s['lag1'])",
+        "assert all(0.1 <= t <= 2.0 for t in temps), 'temperature out of range'",
+        # rho is the Markov parameter: 0 means independent chunks.
+        "iid = drift.stats(drift.trajectory(random.Random(7), 1.0, 0.3, 0.0, 20000))",
+        "assert abs(iid['lag1']) < 0.05, ('rho=0 must be iid', iid['lag1'])",
+        "lo = drift.stats(drift.trajectory(random.Random(3), 1.0, 0.3, 0.2, 20000))['lag1']",
+        "hi = drift.stats(drift.trajectory(random.Random(3), 1.0, 0.3, 0.95, 20000))['lag1']",
+        "assert lo < hi < 1.0, ('persistence must grow with rho', lo, hi)",
+        # Pooling across streams must center each run separately, never count
+        # the jump between runs as persistence.
+        "one = drift.pooled_lag1([[0.2, 0.5, 0.9, 1.4]])",
+        "two = drift.pooled_lag1([[0.2, 0.5, 0.9, 1.4], [0.2, 0.5, 0.9, 1.4]])",
+        "assert one == two, ('duplicating a run must not change the estimate', one, two)",
+        "pooled = drift.pooled_lag1([drift.trajectory(random.Random(i), 1.0, 0.3, 0.8, 200)",
+        "                           for i in range(4)])",
+        "assert abs(pooled - 0.8) < 0.05, ('pooled lag1', pooled)",
+        # Chunked generation against a stub: no model, no network.
+        "temps_used, prompts, sysmsgs, budgets = [], [], [], []",
+        "def fake(prompt, temperature=1.0, system_prompt=None, max_tokens=None):",
+        "    prompts.append(prompt)",
+        "    temps_used.append(round(temperature, 6))",
+        "    sysmsgs.append(system_prompt)",
+        "    budgets.append(max_tokens)",
+        "    return 'chunk text here'",
+        "out = drift.stream(fake, 'seed prompt', mu=1.0, sigma=0.3, rho=0.8,",
+        "                   chunk_tokens=20, max_tokens=60, rng=random.Random(11))",
+        "assert len(temps_used) == 3, ('chunks', len(temps_used))",
+        "assert temps_used == [round(t, 6) for t in out['temps']], 'temps not logged'",
+        "assert prompts[0] == 'seed prompt', prompts[0]",
+        "assert prompts[1].startswith('seed prompt') and 'chunk text here' in prompts[1]",
+        "assert out['text'].count('chunk text here') == 3, out['text']",
+        "assert all(m and 'continue generating' in m for m in sysmsgs), sysmsgs",
+        "assert budgets == [20, 20, 20], ('chunk budgets not enforced', budgets)",
+        "drift.stream(fake, 'p', mu=1.0, sigma=0.3, rho=0.8,",
+        "             chunk_tokens=7, max_tokens=10, rng=random.Random(2))",
+        "assert budgets[-2:] == [7, 3], ('ragged tail', budgets[-2:])",
         "cfg = tinytim.resolve_config()",
         "assert cfg['backend'] in ('ollama', 'hf', 'api'), cfg['backend']",
         "assert 'localhost' in cfg['ollama_host'] or '127.0.0.1' in cfg['ollama_host'], 'ollama default must stay local'",
-        "print(json.dumps({'states': markov.stats(chain)['states'], 'walk': text[:48], 'backend': cfg['backend']}))",
+        "print(json.dumps({'n': len(temps), 'lag1': round(s['lag1'], 3),",
+        "                  'chunks': len(temps_used), 'backend': cfg['backend']}))",
     ])
     proc = subprocess.run([sys.executable, "-c", load_code],
                           cwd=skill_dir, capture_output=True, text=True,
                           env=_CHILD_ENV)
     record(proc.returncode == 0,
-           f"{name}: imports and walks a chain in a fresh process, offline",
+           f"{name}: drift process has the right stationary law and continues text",
            (proc.stderr or proc.stdout).strip()[-400:])
 
     for step in steps:

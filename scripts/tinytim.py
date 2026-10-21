@@ -35,10 +35,9 @@ from __future__ import annotations
 
 import os
 
-try:
-    from npcpy.llm_funcs import get_llm_response
-except ImportError:  # pragma: no cover - reported at call time, not import time
-    get_llm_response = None
+# npcpy is imported on first use, not here: importing it costs seconds, and
+# every module in this folder should stay cheap to import for agent runtimes
+# (and for the pre-commit hook, which re-imports the skill several times).
 
 DEFAULTS = {
     "backend": os.environ.get("TINYTIM_BACKEND", "ollama"),
@@ -73,11 +72,16 @@ def resolve_config(overrides=None):
     return config
 
 
-def _require_npcpy():
-    if get_llm_response is None:
+def _npcpy_response():
+    """The npcpy entry point, imported on demand."""
+    try:
+        from npcpy.llm_funcs import get_llm_response
+    except ImportError as exc:
         raise TinyTimError(
-            "tinytim needs npcpy: pip install npcpy (or pip install -r requirements.txt)"
-        )
+            "tinytim needs npcpy: pip install npcpy "
+            "(or pip install -r requirements.txt)"
+        ) from exc
+    return get_llm_response
 
 
 def _compose_prompt(prompt, system_prompt):
@@ -94,7 +98,7 @@ def _compose_prompt(prompt, system_prompt):
 
 def _call_npcpy(prompt, system_prompt, provider, model, api_url, temperature,
                 max_tokens, api_key=None):
-    _require_npcpy()
+    response_fn = _npcpy_response()
     kwargs = {
         "prompt": _compose_prompt(prompt, system_prompt),
         "model": model,
@@ -106,7 +110,7 @@ def _call_npcpy(prompt, system_prompt, provider, model, api_url, temperature,
     }
     if api_key:
         kwargs["api_key"] = api_key
-    result = get_llm_response(**kwargs)
+    result = response_fn(**kwargs)
     if not isinstance(result, dict):
         return str(result).strip()
     text = result.get("response")

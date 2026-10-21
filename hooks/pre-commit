@@ -67,7 +67,7 @@ if [ -n "$REPO" ]; then
 fi
 
 say "compiling daydream.jinx -> skills/daydream"
-python3 "$ROOT/scripts/compile_skill.py" --if-available
+python3 "$ROOT/scripts/compile_skill.py" --if-available --skip-if-unchanged
 
 say "verifying the compiled skill"
 if ! python3 "$ROOT/scripts/verify_skill.py"; then

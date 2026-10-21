@@ -1,12 +1,14 @@
 ---
 name: daydream
-description: Daydream on a problem in one of three modes. `wander` alternates low-
+description: 'Daydream on a problem in one of three modes. `wander` alternates low-
   and high-temperature streams with random word cutoffs, word sampling and injected
-  events (the original wander algorithm, headless). `markov` fits an order-k Markov
-  chain over the wandering text and walks it, producing a dream that needs no further
-  model calls. `tinytim` dreams with the TinyTim 1B model running locally through
-  Ollama (or the HF checkpoint), so nothing leaves the machine. Use when the user
-  wants divergent, associative thinking rather than analysis, a summary, or a plan.
+  events (the original wander algorithm, headless). `markovian_drift` generates each
+  stream in chunks whose sampling temperature is resampled by an AR(1)/Ornstein-Uhlenbeck
+  process, so the temperature drifts rather than switching: a Markov chain on the
+  sampler, not on the text. `tinytim` dreams with the TinyTim 1B model running locally
+  through Ollama (or the HF checkpoint), so nothing leaves the machine. Use when the
+  user wants divergent, associative thinking rather than analysis, a summary, or a
+  plan.'
 source_jinx: daydream.jinx
 engine: skill
 allowed-tools: Read Bash
@@ -16,7 +18,7 @@ when_to_use: User asks to daydream, wander, brainstorm divergently, free-associa
 
 # daydream
 
-Daydream on a problem in one of three modes. `wander` alternates low- and high-temperature streams with random word cutoffs, word sampling and injected events (the original wander algorithm, headless). `markov` fits an order-k Markov chain over the wandering text and walks it, producing a dream that needs no further model calls. `tinytim` dreams with the TinyTim 1B model running locally through Ollama (or the HF checkpoint), so nothing leaves the machine. Use when the user wants divergent, associative thinking rather than analysis, a summary, or a plan.
+Daydream on a problem in one of three modes. `wander` alternates low- and high-temperature streams with random word cutoffs, word sampling and injected events (the original wander algorithm, headless). `markovian_drift` generates each stream in chunks whose sampling temperature is resampled by an AR(1)/Ornstein-Uhlenbeck process, so the temperature drifts rather than switching: a Markov chain on the sampler, not on the text. `tinytim` dreams with the TinyTim 1B model running locally through Ollama (or the HF checkpoint), so nothing leaves the machine. Use when the user wants divergent, associative thinking rather than analysis, a summary, or a plan.
 
 ## Inputs
 
@@ -33,12 +35,11 @@ Daydream on a problem in one of three modes. `wander` alternates low- and high-t
 - `include_events` (default: `True`)
 - `num_events` (default: `3`)
 - `synthesis` (default: `True`)
-- `markov_order` (default: `2`)
-- `markov_walks` (default: `3`)
-- `markov_walk_words` (default: `90`)
-- `markov_temperature` (default: `0.9`)
-- `markov_rounds` (default: `1`)
-- `n_seed_streams` (default: `4`)
+- `drift_mu` (default: `1.0`)
+- `drift_sigma` (default: `0.3`)
+- `drift_rho` (default: `0.8`)
+- `drift_chunk_tokens` (default: `20`)
+- `drift_max_tokens` (default: `60`)
 - `tinytim_backend` (default: `None`)
 - `tinytim_host` (default: `None`)
 - `tinytim_model` (default: `None`)
@@ -55,36 +56,56 @@ Daydream on a problem in one of three modes. `wander` alternates low- and high-t
 ## Usage
 
 Run the step with Bash from this skill's directory. It is self-contained: no
-npcpy, no npcsh, no network for `markov` once seeds exist.
+npcpy, no npcsh, and `markovian_drift`'s temperature process needs no model at
+all beyond the chunk generations themselves.
 
 ```bash
-python3 daydream.py --mode markov --problem "why do we dream"
-python3 daydream.py --mode tinytim --problem "why do we dream" --tinytim-max-tokens 120
+python3 daydream.py --mode markovian_drift --problem "why do we dream"
 python3 daydream.py --mode wander --problem "why do we dream" --n-streams 2 --no-events --no-synthesis
-python3 daydream.py --json --mode markov --problem "why do we dream"
+python3 daydream.py --mode tinytim --problem "why do we dream" --tinytim-max-tokens 120
+python3 daydream.py --json --mode markovian_drift --problem "why do we dream"
 ```
 
 Pick the mode from what the user wants:
 
-| mode | use when | cost |
+| mode | use when | what the temperature does |
 | --- | --- | --- |
-| `markov` | cheapest; a dream of a dream, or when the machine is busy | seeds need a model, walks are free |
-| `wander` | divergent associative text with interruptions | one generation per stream |
-| `tinytim` | the user wants it fully local, or no other model is reachable | local 1B, ~6 tok/s |
+| `wander` | divergent associative text with interruptions | switches: low, high, low, high |
+| `markovian_drift` | same, but the temperature should wander rather than switch | drifts: an AR(1) process resamples it every chunk |
+| `tinytim` | the user wants it fully local, or no other model is reachable | switched, but generated by the local 1B |
+
+`markovian_drift` is the one to reach for when the user asks for a *drifting*
+or *Markovian* process, or wants to reproduce the divergence-survey mechanism.
+It is not an n-gram text chain: the Markov structure is on the sampling
+temperature, and each chunk continues the text generated so far.
+
+Drift parameters:
+
+| flag | meaning | default |
+| --- | --- | --- |
+| `--drift-mu` | mean sampling temperature | `1.0` |
+| `--drift-sigma` | stationary sd of the temperature | `0.3` |
+| `--drift-rho` | lag-1 autocorrelation (the memory) | `0.8` |
+| `--drift-chunk-tokens` | tokens per temperature sample | `20` |
+| `--drift-max-tokens` | token budget per stream | `60` |
+
+`--drift-rho 0` gives independent sampling per chunk (no drift), which is the
+natural control to compare against. The survey's grid is `mu` in
+{0.7, 1.0, 1.3} and `sigma` in {0.2, 0.3, 0.4}.
 
 Practical notes:
 
-- `markov` and `wander` seed from a model. With no host model configured they
+- Drifting budgets are deliberately short. The paper reports decoherence as
+  temperature and stream length grow, so long drifting streams drift into noise.
+- `wander` and `tinytim` seed from a model; with no host model configured they
   fall back to local TinyTim, so they still work offline.
-- Generation is bounded by `--tinytim-max-tokens` (default 160). Raise it for
-  longer dreams, lower it when a run feels slow.
 - A default `wander` run is 6 streams and can take minutes on a small box. Use
   `--n-streams 2 --no-events --no-synthesis` for a quick look.
-- Add `--seed 7` for a reproducible run.
-- `--json` emits the full report instead of prose.
+- Add `--seed 7` for a reproducible temperature trajectory.
+- `--json` emits the full report, including every temperature trajectory.
 
 TinyTim stays on this machine: default backend is `ollama` at
-`http://localhost:11434`. Pull the weights once if the run reports the model is
+`http://localhost:11434`. Pull the weights once if a run reports the model is
 missing:
 
 ```bash

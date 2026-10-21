@@ -13,7 +13,7 @@ the result does not work.
 daydream.jinx              jinx source of truth
 scripts/
   daydream.py              runtime + standalone CLI
-  markov.py                order-k chain: fit / walk / stats
+  drift.py                 Markovian temperature drift (AR(1) / OU process)
   tinytim.py               local TinyTim client
   compile_skill.py         jinx -> skills/daydream
   verify_skill.py          29 checks, non-zero exit on failure
@@ -26,16 +26,53 @@ hooks/pre-commit           compile, verify, re-stage the artifact
 
 ## Three modes
 
-The agent picks one via the `mode` input.
+The agent picks one via the `mode` input. These mirror the three exploration
+tools in `papers/research/ai/creativity/divergence_survey_benchmarking`
+(`temperature_switch`, `markovian_drift`, `tinytim_explore`), all of which are
+accepted as aliases.
 
 | mode | what happens | model calls |
 | --- | --- | --- |
-| `wander` | Alternating low/high temperature streams, random word-count cutoffs, word subsampling, injected events. The original wander algorithm, headless. | yes, host NPC |
-| `markov` | Fits an order-`k` Markov chain over the wandering text and walks it. `markov_rounds > 1` walks the chain built from the walks. | seeds only, walks are free |
-| `tinytim` | Same wandering, dreamed by the TinyTim 1B locally. | yes, local |
+| `wander` | Alternating low/high temperature streams, random word-count cutoffs, word subsampling, injected events. The original wander algorithm, headless. | one per stream |
+| `markovian_drift` | Each stream is generated in chunks, and the sampling temperature is resampled between chunks by an AR(1) process. | one per chunk |
+| `tinytim` | The same wandering, dreamed by the TinyTim 1B locally. | one per stream, local |
 
-`markov` is the cheap one: once the corpus exists, walking costs nothing and
-can be repeated forever, producing a dream of a dream.
+## Markovian drift
+
+The `markovian_drift` mode is **not** an n-gram text chain. The Markov structure
+is on the sampler's temperature:
+
+```
+tau_0 = Normal(mu, sigma)
+tau_t = mu + rho * (tau_{t-1} - mu) + eps_t      eps_t ~ Normal(0, sigma*sqrt(1 - rho^2))
+```
+
+The innovation scale is chosen so the stationary law is `Normal(mu, sigma)`
+whatever `rho` is: with `Var(eps) = sigma^2 (1 - rho^2)`, the stationary
+variance is `sigma^2 (1 - rho^2) / (1 - rho^2) = sigma^2`. So `rho` alone
+controls memory, and `rho = 0` degrades to independent sampling per chunk — the
+control condition.
+
+Each chunk is a fresh call at the current temperature, prompted with the text
+generated so far, under the divergent-continuation system instruction from the
+survey harness. Temperatures are clipped to `[0.1, 2.0]`.
+
+| flag | meaning | default |
+| --- | --- | --- |
+| `--drift-mu` | mean sampling temperature | `1.0` |
+| `--drift-sigma` | stationary sd of the temperature | `0.3` |
+| `--drift-rho` | lag-1 autocorrelation (the memory) | `0.8` |
+| `--drift-chunk-tokens` | tokens per temperature sample | `20` |
+| `--drift-max-tokens` | token budget per stream | `60` |
+
+Budgets are deliberately short: the survey reports decoherence as temperature
+and stream length grow, so a long drifting stream drifts into noise.
+
+`verify_skill.py` checks the process offline against its stationary law
+(mean→`mu`, sd→`sigma`, lag-1→`rho` within tolerance over 20k samples), that
+`rho=0` is indistinguishable from independent sampling, that persistence grows
+monotonically with `rho`, and that every chunk budget actually reaches the
+model — otherwise the chunking would be cosmetic.
 
 ## TinyTim stays on your machine
 
@@ -75,31 +112,29 @@ Then either invoke it directly or just describe the task and let Claude pick it:
 /daydream why do we dream
 ```
 
-Claude sets `--mode markov` for cheap runs and `--mode tinytim` when it should
-stay on the machine; the skill body documents the trade-offs. `allowed-tools:
-Read Bash` is in the frontmatter, so an invoked skill does not prompt for
-permission on every command.
+`allowed-tools: Read Bash` is in the frontmatter, so an invoked skill does not
+prompt for permission on every command.
 
 ## Use it in npcsh
 
 The jinx takes `mode` and `problem`:
 
 ```
-/run_jinx jinx_ref=daydream input_values={"mode":"markov","problem":"why do we dream"}
+/run_jinx jinx_ref=daydream input_values={"mode":"markovian_drift","problem":"why do we dream"}
 ```
 
 ## Use it standalone
 
-No npcpy needed for `markov`:
+No npcpy needed for the temperature process:
 
 ```bash
-python3 scripts/daydream.py --mode markov --problem "why do we dream"
-python3 scripts/daydream.py --mode tinytim --problem "why do we dream" --tinytim-max-tokens 120
+python3 scripts/daydream.py --mode markovian_drift --problem "why do we dream"
 python3 scripts/daydream.py --mode wander --problem "why do we dream" --n-streams 2 --no-events --no-synthesis
+python3 scripts/daydream.py --mode tinytim --problem "why do we dream" --tinytim-max-tokens 120
 python3 scripts/daydream.py --help
 ```
 
-`wander` and `tinytim` need a reachable model; if the host NPC's provider is
+`wander` and `tinytim` seed from a model; if the host NPC's provider is
 unavailable they fall back to local TinyTim.
 
 ## The hook
@@ -113,14 +148,20 @@ idempotent, and no-ops unless a change under this folder is staged.
 
 On a relevant commit it recompiles the skill and runs 29 checks: frontmatter
 contract, Claude loader rules, skill-slug validity, no leftover jinja, every
-module compiles, the folder imports and walks a chain offline in a fresh
-process, the step script loads without a jinx context, the body carries no
-npcsh-only command, and the TinyTim default is still localhost. Any failure
-refuses the commit. The artifact is re-staged so the commit always holds
-matching source and artifact.
+module compiles, the folder imports offline in a fresh process and the drift
+process matches its stationary law, the step script loads without a jinx
+context, the body carries no npcsh-only command, and the TinyTim default is
+still localhost. Any failure refuses the commit. The artifact is re-staged so
+the commit always holds matching source and artifact.
 
-Compiling needs `npcpy`; if it is not importable the hook warns and still runs
-the verification against the already-compiled folder.
+Compiling needs `npcpy`, and importing it costs about 20 seconds -- so the
+compile step records a hash of its inputs (`daydream.jinx`, the runtime
+modules, `skill_usage.md`, and `compile_skill.py` itself) in a gitignored
+`skills/.compile_stamp`. When nothing feeding the compile has changed the hook
+skips the recompile and goes straight to verification, which takes under a
+second. Touching any input re-triggers a real compile. If `npcpy` is not
+importable the hook warns and still runs the verification against the
+already-compiled folder.
 
 If you use the `pre-commit` framework instead, `.pre-commit-config.yaml` has
 the same two steps.
